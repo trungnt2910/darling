@@ -25,6 +25,7 @@
 #include "sysctl_proc.h"
 #include <stddef.h>
 #include "../elfcalls_wrapper.h"
+#include "../vchroot_expand.h"
 
 #define LINUX_PR_SET_NAME 15
 
@@ -475,7 +476,8 @@ static long _proc_pidinfo_regionpathinfo(int32_t pid, uint64_t arg, void* buffer
 				my_rpi.prp_vip.vip_path
 			))
 			{
-				if (arg >= my_rpi.prp_prinfo.pri_address && arg < (my_rpi.prp_prinfo.pri_address + my_rpi.prp_prinfo.pri_size))
+				// Looking for the first memory region at or after arg.
+				if (arg <= my_rpi.prp_prinfo.pri_address)
 				{
 					foundRegion = true;
 				}
@@ -488,13 +490,28 @@ static long _proc_pidinfo_regionpathinfo(int32_t pid, uint64_t arg, void* buffer
 	}
 	close_internal(fd);
 
+	// This is likely to be a path.
+	// The smaps file returns Linux paths.
+	if (strchr(my_rpi.prp_vip.vip_path, '/'))
+	{
+		struct vchroot_unexpand_args unexpand_args;
+		strcpy(unexpand_args.path, my_rpi.prp_vip.vip_path);
+		vchroot_unexpand(&unexpand_args);
+		strcpy(my_rpi.prp_vip.vip_path, unexpand_args.path);
+	}
+
 	if (my_rpi.prp_vip.vip_path[0])
 	{
 		// TODO: Provide information in struct vinfo_stat
 	}
 
 	memcpy(buffer, &my_rpi, sizeof(my_rpi));
-	return foundRegion ? 1 : -ESRCH;
+	// On successful return, this family of funtions return the 
+	// number of bytes copied to the buffer.
+	// On error due to no more regions being available after arg,
+	// proc_pidinfo_regionpathinfo returns 0 and sets errno to EINVAL.
+	errno = EINVAL;
+	return foundRegion ? sizeof(my_rpi) : 0;
 }
 
 static long _proc_pidinfo_regionpath(int32_t pid, uint64_t arg, void* buffer, int32_t buffer_size) {
